@@ -130,11 +130,11 @@ class TextDetector(object):
 
 
 if __name__ == '__main__':
-    d = TextDetector("./imgs/ID2.jpg")
+    d = TextDetector("./imgs/ID.jpg")
     boxes = d.detect()
     for box in boxes:
         cv2.rectangle(d.resize_img, (box[0], box[1]), (box[2], box[3]), (255, 0, 0), 3)
-    cv2.imwrite("./imgs/R2.jpg", d.resize_img)
+    cv2.imwrite("./imgs/R1.jpg", d.resize_img)
 
 
 
