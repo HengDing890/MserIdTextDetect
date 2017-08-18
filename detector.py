@@ -4,7 +4,7 @@ detector.py
 -------
 
 文字定位器，
-基于MSER算法，定位身份证中的文字区块.
+定位身份证中的文字区块.
 
 @author: Heng Ding
 @e-mail: hengding@whu.edu.cn
