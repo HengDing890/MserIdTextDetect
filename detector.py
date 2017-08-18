@@ -9,136 +9,132 @@ detector.py
 @author: Heng Ding
 @e-mail: hengding@whu.edu.cn
 """
-import cv2
-import numpy as np
+import cv2, numpy as np
 
+class TextDetector(object):
+    """ 文字定位器类 """
 
-class Detector(object):
-    """文字定位器类.
-
-    Attributes:
-        input_img: 原始输入图片(cv2 format).
-        resize_img: 尺寸变化后的图片.
-
-    """
-
-    def __init__(self, cv2_img):
-        """
-
-        :param cv2_img:
-        """
-        self.input_img = cv2_img
+    def __init__(self, img_path):
+        self.img = cv2.imread(img_path)
         self.resize_img = self.transform()
-        # self.resize_img = self.input_img
 
     def transform(self):
-        """归一化尺寸"""
-        h, w, c = np.shape(self.input_img)
+        """ 归一化尺寸，将图片缩放到统一尺寸 """
+        h, w, c = np.shape(self.img)
         f_h = 1920
         f_y = float(h) / 1920
         f_w = int(float(w) / f_y)
-        resize_img = cv2.resize(self.input_img, (f_w, f_h), interpolation=cv2.INTER_AREA)
+        resize_img = cv2.resize(self.img, (f_w, f_h), interpolation=cv2.INTER_AREA)
         return resize_img
 
-    def bounding(self):
-        """返回文字区块坐标"""
+    def hyp_parameters(self):
+        """ 计算经验参数 """
+        h, w, c = np.shape(self.resize_img)
+        # 文字区块最小最大面积
+        min_area, max_area = 27*27, 0.05 * h * w
+        # 文字区块最小最大高度
+        min_h, max_h = 50, 200
+        return min_area, max_area, min_h, max_h
 
-        def tune_regions(roi_image, x, y):
-            """调整文字外框大小"""
-            blur = cv2.GaussianBlur(roi_image, (5, 5), 0)
-            _threshold = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
-            if len(_threshold.shape) == 3:
-                flatImage = np.max(_threshold, 2)
-            else:
-                flatImage = _threshold
-            assert len(flatImage.shape) == 2
-            rows = np.where(np.min(flatImage, 0) == 0)[0]
-            x_start, x_end = np.min(rows), np.max(rows)
-            cols = np.where(np.min(flatImage, 1) == 0)[0]
-            y_start, y_end = np.min(cols), np.max(cols)
-            return x + x_start, y + y_start, x + x_end, y + y_end
+    def find_candidates(self):
+        """ 返回候选文字区块坐标 """
 
-        def merge_boxes(sorted_line_boxes):
-            """如果一行中相邻的两个区块有重叠，则将其合并"""
-            no_overlap_boxes = []
-            i = 0
-            while i < len(sorted_line_boxes)-1:
-                cur_box = sorted_line_boxes[i]
-                next_box = sorted_line_boxes[i+1]
-                if cur_box[2] <= next_box[0]:
-                    no_overlap_boxes.append(cur_box)
-                    i += 1
-                else:
-                    x1 = min([cur_box[0], cur_box[2], next_box[0], next_box[2]])
-                    x2 = max([cur_box[0], cur_box[2], next_box[0], next_box[2]])
-                    no_overlap_boxes.append((x1, cur_box[1], x2, cur_box[3]))
-                    i = i+2
-            if i+1 == len(sorted_line_boxes):
-                no_overlap_boxes.append(sorted_line_boxes[i])
-            return no_overlap_boxes
-
+        # 灰度化
         gray = cv2.cvtColor(self.resize_img, cv2.COLOR_BGR2GRAY)
-        blur = cv2.medianBlur(gray, 3)
 
-        # MSER检测
-        mser = cv2.MSER_create()
-        regions = mser.detectRegions(blur, None)
-        contours = [p.reshape(-1, 1, 2) for p in regions]
+        # 二值化
+        _threshold = cv2.threshold(gray, 100, 255, cv2.THRESH_BINARY)[1]
 
-        # mask图像
-        mask = gray.copy()
-        mask[:] = 0
+        # 腐蚀
+        kernel = np.ones((27, 27), np.uint8)
+        erosion = cv2.erode(_threshold, kernel, iterations = 2)
+
+        # 轮廓检测
+        _, contours, hierarchy = cv2.findContours(erosion, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
+        # 根据经验参数选取区域
+        candidate_boxes = []
+        min_area, max_area, min_h, max_h = self.hyp_parameters()
+
         for cnt in contours:
             x, y, w, h = cv2.boundingRect(cnt)
-            mask[y:y + h, x:x + w] = 255
-        _, contours, hierarchy = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+            if min_area < cv2.contourArea(cnt) < max_area and min_h < h < max_h:
+                candidate_boxes.append((x,y,x+w,y+h))
 
-        # 初步boxes
-        init_boxes, ws, hs = [], [], []
-        for cnt in contours:
-            x, y, w, h = cv2.boundingRect(cnt)
-            x1, y1, x2, y2 = tune_regions(gray[y:y + h, x:x + w], x, y)
-            init_boxes.append((x1, y1, x2, y2))
-            ws.append(x2-x1)
-            hs.append(y2-y1)
+        return candidate_boxes
 
-        # 平均字体大小
-        mean_w, mean_h = np.mean(ws), np.mean(hs)
-        tmp_boxes, range_mask = [], np.zeros(1920)
-        for x1, y1, x2, y2 in init_boxes:
-            if x2-x1 >= mean_w/3.0 and y2-y1 >= mean_h/3.0:
-                tmp_boxes.append((x1, y1, x2, y2))
-                for i in range(y1, y2):
-                    range_mask[i-1] = 1
+    def split_candidates(self, box):
+        """ 候选区块切割 """
 
-        # 文字区块处理与排序
-        tmp, flag = [], False
-        for i in range(1920):
-            if range_mask[i] != flag:
-                tmp.append(i)
-                flag = not flag
+        # 灰度化
+        gray = cv2.cvtColor(self.resize_img, cv2.COLOR_BGR2GRAY)
+        # 二值化
+        _threshold = cv2.threshold(gray, 100, 255, cv2.THRESH_BINARY)[1]
 
+        # 腐蚀
+        kernel = np.ones((3, 5), np.uint8)
+        erosion = cv2.erode(_threshold, kernel, iterations = 2)
+
+        # 获取区块对应腐蚀图像
+        x1, y1, x2, y2 = box
+        box_erosion = erosion[y1:y2, x1:x2]
+
+        # 依据连续空白区域进行列切割
+        his = np.mean(box_erosion, axis=0)
+        split_indexes, flag = [0], True
+        for i in range(len(his)):
+            c = his[i]
+            if c != 255 and flag is True:
+                split_indexes.append(i)
+                flag = False
+            elif c == 255 and flag is False:
+                split_indexes.append(i)
+                flag = True
+        split_indexes.append(len(his))
+
+        assert len(split_indexes) % 2 == 0
+
+        t = [int((i+j)/2) for i,j in zip(split_indexes[::2],split_indexes[1::2])]
+
+        boxes = [(x1+t[i], y1, x1+t[i+1], y2) for i in range(len(t)-1) if t[i+1]-t[i]]
+
+        return boxes
+
+    def is_noisy(self, box):
+        """ 基于坐标规则判断是否属于人脸噪声区块 """
+        h, w, c = np.shape(self.resize_img)
+        x1, y1, x2, y2 = box
+        if (x1+x2)/2 > 0.65*w and (y1+y2)/2 < 0.7*h:
+            return True
+        return False
+
+    def detect(self):
+        # 初步查找候选区域
+        candidate_boxes = self.find_candidates()
+
+        # 初步候选区域切割
+        split_boxes = []
+        for candidate in candidate_boxes:
+            if candidate[2]-candidate[0] > 100:
+                split_boxes += self.split_candidates(candidate)
+            else:
+                split_boxes += [candidate]
+
+        # 屏蔽人脸区域噪音
         final_boxes = []
-        for i in range(0, len(tmp), 2):
-            line_boxes = []
-            h_start, h_end = tmp[i], tmp[i+1]
-            for x1, y1, x2, y2 in tmp_boxes:
-                if y1 > h_start-5 and y2 < h_end+5:
-                    line_boxes.append((x1, h_start, x2, h_end))
-            sorted_line_boxes = sorted(line_boxes, key=lambda t: t[0])
-            final_boxes += merge_boxes(sorted_line_boxes)
+        for box in split_boxes:
+            if not self.is_noisy(box):
+                final_boxes.append(box)
 
         return final_boxes
 
-if __name__ == "__main__":
-    img = cv2.imread("./imgs/ID.jpg")
-    detector = Detector(img)
-    boxes = detector.bounding()
 
-    num = 1
+if __name__ == '__main__':
+    d = TextDetector("./imgs/ID2.jpg")
+    boxes = d.detect()
     for box in boxes:
-        cv2.rectangle(detector.resize_img, (box[0], box[1]), (box[2], box[3]), (255, 0, 0), 3)
-        cv2.putText(detector.resize_img, str(num), (box[0], box[1]), cv2.FONT_HERSHEY_PLAIN, 3.0, (0, 0, 255), 3, 0)
-        num += 1
+        cv2.rectangle(d.resize_img, (box[0], box[1]), (box[2], box[3]), (255, 0, 0), 3)
+    cv2.imwrite("./imgs/R2.jpg", d.resize_img)
 
-    cv2.imwrite("./imgs/Result.jpg", detector.resize_img)
+
+
