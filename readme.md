@@ -6,7 +6,7 @@
 
 ## 使用方法 ##
 
-请先按照依赖包opencv和numpy
+请先安装依赖包opencv和numpy
 
 ``` python
 import cv2
